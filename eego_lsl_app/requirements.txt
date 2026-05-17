@@ -1,0 +1,2 @@
+pylsl>=1.17.6
+openpyxl>=3.1.5

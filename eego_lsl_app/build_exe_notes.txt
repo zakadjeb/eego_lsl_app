@@ -1,0 +1,21 @@
+Planned EXE build notes
+=======================
+
+Do this after confirming that app.py works from Python 3.13:
+
+1. Install PyInstaller:
+   py -3.13 -m pip install pyinstaller
+
+2. From this folder, run a first one-folder build:
+   py -3.13 -m PyInstaller --noconfirm --onedir --windowed --name eego-lsl-app app.py
+
+3. Copy/verify these folders are present next to the executable or included by the spec file:
+   sdk/
+   capfiles/
+
+4. Run:
+   dist\eego-lsl-app\eego-lsl-app.exe
+
+5. Use the Configure firewall button once. The firewall rule should now target the EXE rather than python.exe.
+
+A custom .spec file is likely the cleanest next step, because we need to bundle sdk/, capfiles/, and the eego-SDK.dll reliably.
