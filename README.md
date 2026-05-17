@@ -7,7 +7,7 @@ It can:
 - stream either impedance values or EEG activity to LSL,
 - display electrode impedance on a topomap and EEG values numerically/signal-viewer only.
 
-![screenshot of the app](screenshot.png)
+![screenshot of the app](eego_lsl_app/screenshot.png)
 
 ## Python version
 
