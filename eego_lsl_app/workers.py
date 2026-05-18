@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Callable, Sequence
 
 from eego_sdk import EegoSdk, EegoSdkError
-from lsl_streams import make_outlet
+from lsl_streams import make_marker_outlet, make_outlet
 
 
 @dataclass
@@ -117,6 +117,24 @@ class StreamWorker(threading.Thread):
             names.extend([f"REF{idx + 1}" for idx in range(len(names), len(indices))])
         missing = len([i for i, ch in enumerate(channels) if ch.type == "reference"]) == 0
         return indices, names, missing, "EOG is treated as Ref 32 if present in the loaded cap layout; bip_mask=0"
+
+    def _trigger_indices(self, channels):
+        """Return SDK columns that contain the 8-bit TTL trigger channel.
+
+        The wrapper enum for the bundled SDK uses code 5 for trigger and 6 for
+        sample_counter. Some C++ docs use code 3/4, so we keep those as a
+        defensive fallback.
+        """
+        return [
+            i for i, ch in enumerate(channels)
+            if ch.type == "trigger" or ch.type_code in {5, 3}
+        ]
+
+    def _sample_counter_indices(self, channels):
+        return [
+            i for i, ch in enumerate(channels)
+            if ch.type == "sample_counter" or ch.type_code in {6, 4}
+        ]
 
     def _selected_impedance_indices_and_names(self, channels):
         """Return impedance columns using the *actual* impedance-stream layout.
@@ -300,13 +318,16 @@ class StreamWorker(threading.Thread):
         self._stream_closed = False
         channels = sdk.stream_channels(self.stream_id)
         indices, names, fallback, eog_source = self._selected_eeg_indices_and_names(channels)
+        trigger_indices = self._trigger_indices(channels)
+        sample_counter_indices = self._sample_counter_indices(channels)
         self.out_queue.put({
             "type": "info",
             "message": (
                 f"EEG stream channel types: {self._channel_type_summary(channels)}. "
                 f"Displaying/streaming {len(names)} referential EEG channel(s); "
                 f"ref_mask=0x{ref_mask:016X}, bip_mask=0x{bip_mask:016X}. "
-                f"{eog_source}."
+                f"{eog_source}. Trigger columns={trigger_indices or 'none'}, "
+                f"sample-counter columns={sample_counter_indices or 'none'}."
             ),
         })
         self.out_queue.put({"type": "info", "message": "EEG SDK columns: " + self._channel_debug_list(channels)})
@@ -319,15 +340,58 @@ class StreamWorker(threading.Thread):
                 ),
             })
         outlet = None
+        trigger_outlet = None
         if self.config.stream_lsl:
             outlet = make_outlet(f"eego-{self.config.serial}-EEG", "EEG", names, sampling_rate, "microvolts")
+            if trigger_indices:
+                trigger_outlet = make_marker_outlet(f"eego-{self.config.serial}-eeg-trigger-events", "Markers", "trigger")
+                self.out_queue.put({
+                    "type": "info",
+                    "message": "Started separate LSL trigger-event stream: "
+                               f"eego-{self.config.serial}-eeg-trigger-events",
+                })
+            else:
+                self.out_queue.put({
+                    "type": "info",
+                    "message": "No SDK trigger channel was reported; no trigger-event LSL stream was created.",
+                })
         self.out_queue.put({"type": "started", "mode": "eeg", "channels": names})
         last_gui = 0.0
         gui_rows_uv = []
+        last_trigger_codes = [0 for _ in trigger_indices]
         try:
             while not self.stop_event.is_set():
                 samples = sdk.get_data(self.stream_id)
                 if samples:
+                    # Detect and stream trigger events from the raw SDK EEG rows before
+                    # filtering down to EEG channels. The manual describes the trigger
+                    # as an 8-bit decimal code; we only emit non-zero rising/new codes.
+                    if trigger_indices:
+                        for raw_row in samples:
+                            sample_counter = None
+                            if sample_counter_indices and sample_counter_indices[0] < len(raw_row):
+                                try:
+                                    sample_counter = int(round(float(raw_row[sample_counter_indices[0]])))
+                                except Exception:
+                                    sample_counter = None
+                            for ti, trig_col in enumerate(trigger_indices):
+                                if trig_col >= len(raw_row):
+                                    continue
+                                try:
+                                    code = int(round(float(raw_row[trig_col])))
+                                except Exception:
+                                    code = 0
+                                if code > 0 and code != last_trigger_codes[ti]:
+                                    if trigger_outlet:
+                                        trigger_outlet.push_sample([code])
+                                    self.out_queue.put({
+                                        "type": "trigger",
+                                        "code": code,
+                                        "column": trig_col,
+                                        "sample_counter": sample_counter,
+                                    })
+                                last_trigger_codes[ti] = code
+
                     # Keep only selected EEG columns: reference electrodes plus EOG if available.
                     eeg_rows = self._filter_rows(samples, indices)
                     # The SDK usually returns EEG in volts. Convert to microvolts for LSL/user display.

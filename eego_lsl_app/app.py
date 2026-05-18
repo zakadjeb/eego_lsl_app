@@ -27,7 +27,7 @@ ELECTRODE_OUTLINE = "#4f5b62"
 class EegoLslApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("eego LSL: Impedance + EEG v20")
+        self.title("eego LSL: Impedance + EEG v25")
         self.geometry("1160x780")
         self.minsize(1020, 680)
 
@@ -56,6 +56,8 @@ class EegoLslApp(tk.Tk):
         self.amplifiers = []
         self.worker: StreamWorker | None = None
         self.queue: queue.Queue = queue.Queue()
+        self.battery_var = tk.StringVar(value="Battery: unavailable")
+        self.battery_note = "Battery percentage is not exposed by the bundled eego SDK C wrapper."
 
         self._build_ui()
         self.after(250, self._ask_layout_on_start)
@@ -79,6 +81,7 @@ class EegoLslApp(tk.Tk):
         ttk.Button(top, text="Configure firewall", command=self.configure_firewall).pack(side=tk.LEFT, padx=(8, 0))
         self.layout_label = ttk.Label(top, text="No layout loaded")
         self.layout_label.pack(side=tk.LEFT, padx=8)
+        ttk.Label(top, textvariable=self.battery_var, foreground="#7a858c").pack(side=tk.RIGHT, padx=(8, 0))
 
         ttk.Separator(root).pack(fill=tk.X, pady=8)
 
@@ -314,6 +317,9 @@ class EegoLslApp(tk.Tk):
         self.amp_combo["values"] = values
         self.amp_combo.current(0)
         self.status_var.set(f"Detected {len(self.amplifiers)} amplifier(s). SDK version: {version}")
+        self.battery_var.set("Battery: unavailable")
+        self.log_msg("INFO: Battery percentage is not available through the bundled eego SDK C wrapper. "
+                     "Use the amplifier POWER LED as the fallback indicator: green=high, yellow=medium, red=low.")
 
     def selected_amp(self):
         idx = self.amp_combo.current()
@@ -411,6 +417,12 @@ class EegoLslApp(tk.Tk):
             self._update_values(msg["names"], msg["values"], unit="µV")
         elif typ == "eeg_block":
             self._update_signal_block(msg.get("names", []), msg.get("samples", []), unit="µV")
+        elif typ == "trigger":
+            sc = msg.get("sample_counter")
+            suffix = f" at sample_counter={sc}" if sc is not None else ""
+            text = f"TRIGGER: code {msg.get('code')} from SDK column {msg.get('column')}{suffix}"
+            self.log_msg(text)
+            self.status_var.set(text)
         elif typ == "info":
             self.log_msg("INFO: " + msg.get("message", ""))
             self.status_var.set(msg.get("message", ""))
